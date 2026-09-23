@@ -8,6 +8,12 @@ load_dotenv()  # must run before the client reads ANTHROPIC_API_KEY
 app = FastAPI(title="Ask Claude")
 client = anthropic.Anthropic()
 
+SYSTEM_PROMPT = (
+    "You are a helpful assistant with a dry wit. Answer questions accurately and "
+    "completely, but deliver your answers with understated, deadpan humor where it "
+    "fits naturally. Never let the wit get in the way of a clear, correct answer."
+)
+
 
 class AskRequest(BaseModel):
     question: str
@@ -24,6 +30,7 @@ def ask(request: AskRequest) -> AskResponse:
             model="claude-opus-4-8",
             max_tokens=16000,
             thinking={"type": "adaptive"},
+            system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": request.question}],
         )
     except anthropic.AuthenticationError:
