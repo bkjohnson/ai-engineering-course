@@ -1,6 +1,9 @@
+from typing import Literal
+
 import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()  # must run before the client reads ANTHROPIC_API_KEY
@@ -44,3 +47,43 @@ def ask(request: AskRequest) -> AskResponse:
 
     answer = "".join(block.text for block in response.content if block.type == "text")
     return AskResponse(answer=answer)
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+
+
+@app.post("/chat")
+def chat(request: ChatRequest) -> StreamingResponse:
+    def generate():
+        try:
+            with client.messages.stream(
+                model="claude-opus-4-8",
+                max_tokens=64000,
+                thinking={"type": "adaptive"},
+                system=SYSTEM_PROMPT,
+                messages=[m.model_dump() for m in request.messages],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
+        except anthropic.APIError as e:
+            # Headers are already sent, so surface the error in the stream body.
+            yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
+
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/chat", include_in_schema=False)
+def chat_page() -> RedirectResponse:
+    # Navigating to /chat in a browser is a GET; the API endpoint is POST-only.
+    return RedirectResponse(url="/")
+
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse("static/index.html")
