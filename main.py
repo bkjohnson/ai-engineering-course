@@ -4,7 +4,7 @@ import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 load_dotenv()  # must run before the client reads ANTHROPIC_API_KEY
 
@@ -23,18 +23,34 @@ class AskRequest(BaseModel):
 
 
 class AskResponse(BaseModel):
-    answer: str
+    answer: str = Field(description="The complete answer to the user's question.")
+    sources: list[str] = Field(
+        description=(
+            "Sources supporting the answer, drawn from your training knowledge "
+            "(e.g. named publications, standards, or authoritative references). "
+            "Empty if the answer needs no sourcing."
+        )
+    )
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "How confident you are in the accuracy of the answer, as a number "
+            "from 0.0 (pure guess) to 1.0 (certain)."
+        ),
+    )
 
 
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest) -> AskResponse:
     try:
-        response = client.messages.create(
+        response = client.messages.parse(
             model="claude-opus-4-8",
             max_tokens=16000,
             thinking={"type": "adaptive"},
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": request.question}],
+            output_format=AskResponse,
         )
     except anthropic.AuthenticationError:
         raise HTTPException(status_code=500, detail="Anthropic API key is invalid")
@@ -45,8 +61,9 @@ def ask(request: AskRequest) -> AskResponse:
     except anthropic.APIConnectionError:
         raise HTTPException(status_code=502, detail="Could not reach the Anthropic API")
 
-    answer = "".join(block.text for block in response.content if block.type == "text")
-    return AskResponse(answer=answer)
+    if response.parsed_output is None:
+        raise HTTPException(status_code=502, detail="Model returned an unparseable response")
+    return response.parsed_output
 
 
 class ChatMessage(BaseModel):
