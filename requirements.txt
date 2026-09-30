@@ -5,3 +5,4 @@ python-dotenv
 pytest
 streamlit
 requests
+honcho

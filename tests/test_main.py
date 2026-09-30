@@ -261,13 +261,7 @@ def test_chat_rejects_invalid_role():
     assert response.status_code == 422
 
 
-def test_get_chat_redirects_to_ui():
-    response = client.get("/chat", follow_redirects=False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "/"
-
-
-def test_index_serves_chat_ui():
+def test_index_describes_the_api():
     response = client.get("/")
     assert response.status_code == 200
-    assert "<title>Ask Claude</title>" in response.text
+    assert response.json()["service"] == "Ask Claude API"

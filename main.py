@@ -4,7 +4,7 @@ from typing import Literal
 import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()  # must run before the client reads ANTHROPIC_API_KEY
@@ -194,12 +194,10 @@ def chat(request: ChatRequest) -> StreamingResponse:
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
 
 
-@app.get("/chat", include_in_schema=False)
-def chat_page() -> RedirectResponse:
-    # Navigating to /chat in a browser is a GET; the API endpoint is POST-only.
-    return RedirectResponse(url="/")
-
-
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse("static/index.html")
+def index() -> dict:
+    return {
+        "service": "Ask Claude API",
+        "docs": "/docs",
+        "ui": "Streamlit — run `streamlit run streamlit_app.py`",
+    }
