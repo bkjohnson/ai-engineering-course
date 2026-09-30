@@ -19,6 +19,13 @@ PRIMARY_MODEL = "claude-opus-4-8"
 FALLBACK_MODEL = "claude-haiku-4-5"
 SupportedModel = Literal["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
 ADAPTIVE_THINKING_MODELS = {"claude-opus-4-8", "claude-sonnet-5"}  # not Haiku 4.5
+
+# (input, output) USD per million tokens — keep in sync with anthropic.com/pricing
+MODEL_PRICING_PER_MTOK = {
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-sonnet-5": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
 REQUEST_TIMEOUT_SECONDS = 60.0
 MAX_RETRIES = 2  # SDK retries 429/5xx/connection errors with exponential backoff
 
@@ -44,7 +51,9 @@ class AskRequest(BaseModel):
     model: SupportedModel = PRIMARY_MODEL
 
 
-class AskResponse(BaseModel):
+class ModelAnswer(BaseModel):
+    """The part of the response the model produces (structured output schema)."""
+
     answer: str = Field(description="The complete answer to the user's question.")
     sources: list[str] = Field(
         description=(
@@ -63,13 +72,26 @@ class AskResponse(BaseModel):
     )
 
 
+class AskResponse(ModelAnswer):
+    """The full API response: the model's answer plus server-computed usage."""
+
+    tokens_used: int
+    cost_usd: float
+
+
+def _cost_usd(model: str, usage) -> float:
+    input_price, output_price = MODEL_PRICING_PER_MTOK[model]
+    cost = (usage.input_tokens * input_price + usage.output_tokens * output_price) / 1_000_000
+    return round(cost, 6)
+
+
 def _parse_answer(question: str, model: str) -> anthropic.types.Message:
     kwargs = dict(
         model=model,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": question}],
-        output_format=AskResponse,
+        output_format=ModelAnswer,
     )
     if model in ADAPTIVE_THINKING_MODELS:
         kwargs["thinking"] = {"type": "adaptive"}
@@ -78,6 +100,7 @@ def _parse_answer(question: str, model: str) -> anthropic.types.Message:
 
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest) -> AskResponse:
+    served_model = request.model
     try:
         try:
             response = _parse_answer(request.question, request.model)
@@ -88,6 +111,7 @@ def ask(request: AskRequest) -> AskResponse:
                 "Requested model %s unavailable (%s); falling back to %s",
                 request.model, type(e).__name__, FALLBACK_MODEL,
             )
+            served_model = FALLBACK_MODEL
             response = _parse_answer(request.question, FALLBACK_MODEL)
     except anthropic.AuthenticationError:
         logger.exception("Anthropic authentication failed")
@@ -108,7 +132,13 @@ def ask(request: AskRequest) -> AskResponse:
     if response.parsed_output is None:
         logger.error("Model returned an unparseable structured response")
         raise HTTPException(status_code=502, detail="Model returned an unparseable response")
-    return response.parsed_output
+
+    usage = response.usage
+    return AskResponse(
+        **response.parsed_output.model_dump(),
+        tokens_used=usage.input_tokens + usage.output_tokens,
+        cost_usd=_cost_usd(served_model, usage),
+    )
 
 
 class ChatMessage(BaseModel):

@@ -29,12 +29,18 @@ def timeout_error() -> anthropic.APITimeoutError:
     return anthropic.APITimeoutError(request=httpx.Request("POST", API_URL))
 
 
+class FakeUsage:
+    input_tokens = 100
+    output_tokens = 50
+
+
 class FakeParsedResponse:
     def __init__(self, parsed_output):
         self.parsed_output = parsed_output
+        self.usage = FakeUsage()
 
 
-GOOD_ANSWER = main.AskResponse(answer="Paris.", sources=["Common knowledge"], confidence=0.98)
+GOOD_ANSWER = main.ModelAnswer(answer="Paris.", sources=["Common knowledge"], confidence=0.98)
 
 
 # --- /ask ---------------------------------------------------------------
@@ -52,7 +58,14 @@ def test_ask_happy_path_uses_primary_model():
 
     assert response.status_code == 200
     body = response.json()
-    assert body == {"answer": "Paris.", "sources": ["Common knowledge"], "confidence": 0.98}
+    assert body == {
+        "answer": "Paris.",
+        "sources": ["Common knowledge"],
+        "confidence": 0.98,
+        "tokens_used": 150,
+        # 100 input @ $5/MTok + 50 output @ $25/MTok (opus pricing)
+        "cost_usd": 0.00175,
+    }
     assert len(calls) == 1
     assert calls[0]["model"] == main.PRIMARY_MODEL
     assert calls[0]["thinking"] == {"type": "adaptive"}
@@ -74,6 +87,9 @@ def test_ask_falls_back_when_primary_rate_limited():
     assert [c["model"] for c in calls] == [main.PRIMARY_MODEL, main.FALLBACK_MODEL]
     # Haiku 4.5 doesn't support adaptive thinking — must not be sent.
     assert "thinking" not in calls[1]
+    # Cost must be priced at the model that actually served the request.
+    # 100 input @ $1/MTok + 50 output @ $5/MTok (haiku pricing)
+    assert response.json()["cost_usd"] == 0.00035
 
 
 def test_ask_returns_429_when_both_models_rate_limited():
@@ -180,7 +196,7 @@ def test_ask_rejects_invalid_request_body():
 
 def test_confidence_must_be_between_0_and_1():
     with pytest.raises(ValidationError):
-        main.AskResponse(answer="x", sources=[], confidence=1.5)
+        main.ModelAnswer(answer="x", sources=[], confidence=1.5)
 
 
 # --- /chat --------------------------------------------------------------
