@@ -46,9 +46,16 @@ SYSTEM_PROMPT = (
 )
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class AskRequest(BaseModel):
     question: str
     model: SupportedModel = PRIMARY_MODEL
+    stream: bool = False
+    history: list[ChatMessage] = []
 
 
 class ModelAnswer(BaseModel):
@@ -85,12 +92,18 @@ def _cost_usd(model: str, usage) -> float:
     return round(cost, 6)
 
 
-def _parse_answer(question: str, model: str) -> anthropic.types.Message:
+def _conversation(request: AskRequest) -> list[dict]:
+    return [m.model_dump() for m in request.history] + [
+        {"role": "user", "content": request.question}
+    ]
+
+
+def _parse_answer(messages: list[dict], model: str) -> anthropic.types.Message:
     kwargs = dict(
         model=model,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": question}],
+        messages=messages,
         output_format=ModelAnswer,
     )
     if model in ADAPTIVE_THINKING_MODELS:
@@ -98,12 +111,62 @@ def _parse_answer(question: str, model: str) -> anthropic.types.Message:
     return client.messages.parse(**kwargs)
 
 
-@app.post("/ask", response_model=AskResponse)
-def ask(request: AskRequest) -> AskResponse:
+def _stream_answer(request: AskRequest) -> StreamingResponse:
+    messages = _conversation(request)
+
+    def stream_model(model: str):
+        kwargs = dict(model=model, max_tokens=64000, system=SYSTEM_PROMPT, messages=messages)
+        if model in ADAPTIVE_THINKING_MODELS:
+            kwargs["thinking"] = {"type": "adaptive"}
+        with client.messages.stream(**kwargs) as stream:
+            yield from stream.text_stream
+
+    def generate():
+        # Headers are already sent once we start yielding, so failures are
+        # surfaced in the stream body rather than as HTTP status codes.
+        emitted = False
+        try:
+            for text in stream_model(request.model):
+                emitted = True
+                yield text
+            return
+        except RETRYABLE_ERRORS as e:
+            if emitted:
+                logger.exception("Stream failed mid-response on %s", request.model)
+                yield "\n\n[The response was interrupted by an upstream error — this may be incomplete.]"
+                return
+            if request.model == FALLBACK_MODEL:
+                logger.exception("Fallback model %s unavailable", FALLBACK_MODEL)
+                yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
+                return
+            logger.warning(
+                "Requested model %s unavailable (%s); falling back to %s",
+                request.model, type(e).__name__, FALLBACK_MODEL,
+            )
+        except anthropic.APIError as e:
+            logger.exception("Streaming request failed on %s", request.model)
+            yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
+            return
+
+        try:
+            for text in stream_model(FALLBACK_MODEL):
+                yield text
+        except anthropic.APIError as e:
+            logger.exception("Fallback model %s also failed", FALLBACK_MODEL)
+            yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
+
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+
+
+@app.post("/ask", response_model=None)
+def ask(request: AskRequest) -> AskResponse | StreamingResponse:
+    if request.stream:
+        return _stream_answer(request)
+
     served_model = request.model
     try:
         try:
-            response = _parse_answer(request.question, request.model)
+            response = _parse_answer(_conversation(request), request.model)
         except RETRYABLE_ERRORS as e:
             if request.model == FALLBACK_MODEL:
                 raise  # already on the fallback model; nothing left to try
@@ -112,7 +175,7 @@ def ask(request: AskRequest) -> AskResponse:
                 request.model, type(e).__name__, FALLBACK_MODEL,
             )
             served_model = FALLBACK_MODEL
-            response = _parse_answer(request.question, FALLBACK_MODEL)
+            response = _parse_answer(_conversation(request), FALLBACK_MODEL)
     except anthropic.AuthenticationError:
         logger.exception("Anthropic authentication failed")
         raise HTTPException(status_code=500, detail="Anthropic API key is invalid")
@@ -140,55 +203,3 @@ def ask(request: AskRequest) -> AskResponse:
         cost_usd=_cost_usd(served_model, usage),
     )
 
-
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
-
-
-class ChatRequest(BaseModel):
-    messages: list[ChatMessage]
-
-
-@app.post("/chat")
-def chat(request: ChatRequest) -> StreamingResponse:
-    messages = [m.model_dump() for m in request.messages]
-
-    def stream_model(model: str):
-        kwargs = dict(model=model, max_tokens=64000, system=SYSTEM_PROMPT, messages=messages)
-        if model == PRIMARY_MODEL:
-            kwargs["thinking"] = {"type": "adaptive"}  # not supported on Haiku 4.5
-        with client.messages.stream(**kwargs) as stream:
-            yield from stream.text_stream
-
-    def generate():
-        # Headers are already sent once we start yielding, so failures are
-        # surfaced in the stream body rather than as HTTP status codes.
-        emitted = False
-        try:
-            for text in stream_model(PRIMARY_MODEL):
-                emitted = True
-                yield text
-            return
-        except RETRYABLE_ERRORS as e:
-            if emitted:
-                logger.exception("Stream failed mid-response on %s", PRIMARY_MODEL)
-                yield "\n\n[The response was interrupted by an upstream error — this may be incomplete.]"
-                return
-            logger.warning(
-                "Primary model %s unavailable (%s); falling back to %s",
-                PRIMARY_MODEL, type(e).__name__, FALLBACK_MODEL,
-            )
-        except anthropic.APIError as e:
-            logger.exception("Chat request failed on %s", PRIMARY_MODEL)
-            yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
-            return
-
-        try:
-            for text in stream_model(FALLBACK_MODEL):
-                yield text
-        except anthropic.APIError as e:
-            logger.exception("Fallback model %s also failed", FALLBACK_MODEL)
-            yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
-
-    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")

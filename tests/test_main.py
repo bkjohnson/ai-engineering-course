@@ -199,7 +199,7 @@ def test_confidence_must_be_between_0_and_1():
         main.ModelAnswer(answer="x", sources=[], confidence=1.5)
 
 
-# --- /chat --------------------------------------------------------------
+# --- /ask with stream=True ------------------------------------------------
 
 
 class FakeStream:
@@ -207,20 +207,45 @@ class FakeStream:
         self.text_stream = iter(chunks)
 
 
-def test_chat_happy_path_streams_text():
+def test_ask_streams_text_when_stream_true():
+    seen = {}
+
     @contextmanager
     def fake_stream(**kwargs):
-        assert kwargs["model"] == main.PRIMARY_MODEL
+        seen.update(kwargs)
         yield FakeStream(["Hello ", "there."])
 
     with patch.object(main.client.messages, "stream", fake_stream):
-        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        response = client.post("/ask", json={"question": "hi", "stream": True})
 
     assert response.status_code == 200
     assert response.text == "Hello there."
+    assert seen["model"] == main.PRIMARY_MODEL
+    assert seen["messages"] == [{"role": "user", "content": "hi"}]
 
 
-def test_chat_falls_back_when_primary_fails_before_first_token():
+def test_ask_streaming_includes_history():
+    seen = {}
+
+    @contextmanager
+    def fake_stream(**kwargs):
+        seen.update(kwargs)
+        yield FakeStream(["ok"])
+
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+    with patch.object(main.client.messages, "stream", fake_stream):
+        response = client.post(
+            "/ask", json={"question": "follow-up", "history": history, "stream": True}
+        )
+
+    assert response.status_code == 200
+    assert seen["messages"] == history + [{"role": "user", "content": "follow-up"}]
+
+
+def test_ask_streaming_falls_back_when_primary_fails_before_first_token():
     @contextmanager
     def fake_stream(**kwargs):
         if kwargs["model"] == main.PRIMARY_MODEL:
@@ -228,13 +253,13 @@ def test_chat_falls_back_when_primary_fails_before_first_token():
         yield FakeStream(["fallback ", "stream"])
 
     with patch.object(main.client.messages, "stream", fake_stream):
-        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        response = client.post("/ask", json={"question": "hi", "stream": True})
 
     assert response.status_code == 200
     assert response.text == "fallback stream"
 
 
-def test_chat_midstream_failure_keeps_partial_and_adds_notice():
+def test_ask_streaming_midstream_failure_keeps_partial_and_adds_notice():
     class DyingStream:
         @property
         def text_stream(self):
@@ -249,13 +274,22 @@ def test_chat_midstream_failure_keeps_partial_and_adds_notice():
         yield DyingStream()
 
     with patch.object(main.client.messages, "stream", fake_stream):
-        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        response = client.post("/ask", json={"question": "hi", "stream": True})
 
     assert response.status_code == 200
     assert response.text.startswith("partial ")
     assert "interrupted" in response.text
 
 
-def test_chat_rejects_invalid_role():
-    response = client.post("/chat", json={"messages": [{"role": "system", "content": "hi"}]})
+def test_ask_rejects_invalid_history_role():
+    response = client.post(
+        "/ask",
+        json={"question": "hi", "history": [{"role": "system", "content": "x"}]},
+    )
     assert response.status_code == 422
+
+
+def test_chat_endpoint_is_gone():
+    # Route-table check rather than an HTTP call: once the gateway module is
+    # imported (by its own tests), unknown paths proxy instead of 404ing.
+    assert "/chat" not in {getattr(route, "path", None) for route in main.app.routes}

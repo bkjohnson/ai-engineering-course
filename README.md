@@ -8,7 +8,7 @@ Claude models — helpful answers, dry wit included at no extra charge.
 | File | Purpose |
 |---|---|
 | `main.py` | FastAPI backend: `/ask` (structured JSON answers) and `/chat` (streaming) |
-| `streamlit_app.py` | Streamlit chat UI; talks to the API's `/chat` endpoint |
+| `streamlit_app.py` | Streamlit chat UI; talks to the API's `/ask` endpoint in streaming mode |
 | `gateway.py` | Reverse proxy for single-service deploys: serves the API natively, forwards everything else (HTTP + websockets) to Streamlit |
 | `Procfile` | Runs the API + UI together locally via `honcho start` |
 | `start-render.sh` | Start script for a single Render web service (gateway + internal UI) |
@@ -16,10 +16,13 @@ Claude models — helpful answers, dry wit included at no extra charge.
 
 ### API endpoints
 
-- `POST /ask` — `{"question": "...", "model": "claude-haiku-4-5"}` (model optional).
-  Returns `{answer, sources, confidence, tokens_used, cost_usd}`.
-- `POST /chat` — `{"messages": [{"role": "user", "content": "..."}]}`.
-  Streams the reply as plain text; used by the Streamlit UI.
+- `POST /ask` — the single endpoint, with two modes:
+  - **Structured (default):** `{"question": "...", "model": "claude-haiku-4-5"}`
+    returns `{answer, sources, confidence, tokens_used, cost_usd}`.
+  - **Streaming:** add `"stream": true` to get the reply as plain text,
+    token by token. Optional `"history": [{"role": "user"|"assistant",
+    "content": "..."}]` carries conversation context (both modes support it);
+    this is what the Streamlit UI uses.
 - Interactive docs at `/docs`.
 
 Both endpoints retry transient failures and fall back to `claude-haiku-4-5`
@@ -89,4 +92,4 @@ the service.
 So on the deployed URL:
 
 - `/` → the chat UI
-- `POST /ask`, `POST /chat`, `/docs` → the API, exactly as when run alone
+- `POST /ask` and `/docs` → the API, exactly as when run alone

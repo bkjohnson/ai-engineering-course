@@ -36,10 +36,11 @@ for message in st.session_state.messages:
 
 
 def stream_reply(messages: list[dict]):
-    """Yield text chunks from the API's streaming /chat endpoint."""
+    """Yield text chunks from the API's /ask endpoint in streaming mode."""
+    *history, latest = messages
     with requests.post(
-        f"{API_BASE_URL}/chat",
-        json={"messages": messages},
+        f"{API_BASE_URL}/ask",
+        json={"question": latest["content"], "history": history, "stream": True},
         stream=True,
         timeout=REQUEST_TIMEOUT_SECONDS,
     ) as response:
