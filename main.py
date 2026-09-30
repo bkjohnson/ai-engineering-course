@@ -17,6 +17,8 @@ logger = logging.getLogger("ask_claude")
 
 PRIMARY_MODEL = "claude-opus-4-8"
 FALLBACK_MODEL = "claude-haiku-4-5"
+SupportedModel = Literal["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
+ADAPTIVE_THINKING_MODELS = {"claude-opus-4-8", "claude-sonnet-5"}  # not Haiku 4.5
 REQUEST_TIMEOUT_SECONDS = 60.0
 MAX_RETRIES = 2  # SDK retries 429/5xx/connection errors with exponential backoff
 
@@ -39,6 +41,7 @@ SYSTEM_PROMPT = (
 
 class AskRequest(BaseModel):
     question: str
+    model: SupportedModel = PRIMARY_MODEL
 
 
 class AskResponse(BaseModel):
@@ -68,8 +71,8 @@ def _parse_answer(question: str, model: str) -> anthropic.types.Message:
         messages=[{"role": "user", "content": question}],
         output_format=AskResponse,
     )
-    if model == PRIMARY_MODEL:
-        kwargs["thinking"] = {"type": "adaptive"}  # not supported on Haiku 4.5
+    if model in ADAPTIVE_THINKING_MODELS:
+        kwargs["thinking"] = {"type": "adaptive"}
     return client.messages.parse(**kwargs)
 
 
@@ -77,18 +80,20 @@ def _parse_answer(question: str, model: str) -> anthropic.types.Message:
 def ask(request: AskRequest) -> AskResponse:
     try:
         try:
-            response = _parse_answer(request.question, PRIMARY_MODEL)
+            response = _parse_answer(request.question, request.model)
         except RETRYABLE_ERRORS as e:
+            if request.model == FALLBACK_MODEL:
+                raise  # already on the fallback model; nothing left to try
             logger.warning(
-                "Primary model %s unavailable (%s); falling back to %s",
-                PRIMARY_MODEL, type(e).__name__, FALLBACK_MODEL,
+                "Requested model %s unavailable (%s); falling back to %s",
+                request.model, type(e).__name__, FALLBACK_MODEL,
             )
             response = _parse_answer(request.question, FALLBACK_MODEL)
     except anthropic.AuthenticationError:
         logger.exception("Anthropic authentication failed")
         raise HTTPException(status_code=500, detail="Anthropic API key is invalid")
     except anthropic.RateLimitError:
-        logger.warning("Rate limited on both %s and %s", PRIMARY_MODEL, FALLBACK_MODEL)
+        logger.warning("Rate limited (requested model: %s)", request.model)
         raise HTTPException(status_code=429, detail="Rate limited by the Anthropic API")
     except anthropic.APITimeoutError:
         logger.exception("Anthropic request timed out after %ss", REQUEST_TIMEOUT_SECONDS)

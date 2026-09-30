@@ -116,6 +116,63 @@ def test_ask_returns_502_when_output_unparseable():
     assert response.status_code == 502
 
 
+def test_ask_honors_requested_model_without_thinking_on_haiku():
+    calls = []
+
+    def fake_parse(**kwargs):
+        calls.append(kwargs)
+        return FakeParsedResponse(GOOD_ANSWER)
+
+    with patch.object(main.client.messages, "parse", side_effect=fake_parse):
+        response = client.post(
+            "/ask", json={"question": "hi", "model": "claude-haiku-4-5"}
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["model"] == "claude-haiku-4-5"
+    assert "thinking" not in calls[0]
+
+
+def test_ask_sends_thinking_for_sonnet():
+    calls = []
+
+    def fake_parse(**kwargs):
+        calls.append(kwargs)
+        return FakeParsedResponse(GOOD_ANSWER)
+
+    with patch.object(main.client.messages, "parse", side_effect=fake_parse):
+        response = client.post(
+            "/ask", json={"question": "hi", "model": "claude-sonnet-5"}
+        )
+
+    assert response.status_code == 200
+    assert calls[0]["model"] == "claude-sonnet-5"
+    assert calls[0]["thinking"] == {"type": "adaptive"}
+
+
+def test_ask_rejects_unsupported_model():
+    response = client.post(
+        "/ask", json={"question": "hi", "model": "gpt-4o-mini"}
+    )
+    assert response.status_code == 422
+
+
+def test_ask_no_fallback_retry_when_fallback_model_requested():
+    calls = []
+
+    def fake_parse(**kwargs):
+        calls.append(kwargs)
+        raise api_error(anthropic.RateLimitError, 429, "rate limited")
+
+    with patch.object(main.client.messages, "parse", side_effect=fake_parse):
+        response = client.post(
+            "/ask", json={"question": "hi", "model": main.FALLBACK_MODEL}
+        )
+
+    assert response.status_code == 429
+    assert len(calls) == 1  # no pointless second attempt on the same model
+
+
 def test_ask_rejects_invalid_request_body():
     response = client.post("/ask", json={"prompt": "wrong field"})
     assert response.status_code == 422
