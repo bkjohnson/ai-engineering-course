@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Single Render web service: Streamlit is the public process on $PORT,
-# the FastAPI backend runs internally on localhost.
+# Single Render web service: the gateway (uvicorn) is the public process on
+# $PORT. It serves the API natively and reverse-proxies everything else to
+# the internal Streamlit UI, so both are publicly reachable on one URL.
 # Render start command: bash start-render.sh
 set -euo pipefail
 
-INTERNAL_API_PORT="${INTERNAL_API_PORT:-8000}"
+UI_INTERNAL_PORT="${UI_INTERNAL_PORT:-8501}"
+PUBLIC_PORT="${PORT:-8000}"
 
-uvicorn main:app --host 127.0.0.1 --port "$INTERNAL_API_PORT" &
-
-API_BASE_URL="http://127.0.0.1:$INTERNAL_API_PORT" streamlit run streamlit_app.py \
-  --server.port "${PORT:-8501}" \
-  --server.address 0.0.0.0 \
+# Internal UI: localhost only; the gateway is its sole caller.
+API_BASE_URL="http://127.0.0.1:$PUBLIC_PORT" streamlit run streamlit_app.py \
+  --server.port "$UI_INTERNAL_PORT" \
+  --server.address 127.0.0.1 \
   --server.headless true &
+
+# Public gateway: API + proxy to the UI.
+UI_INTERNAL_PORT="$UI_INTERNAL_PORT" uvicorn gateway:app \
+  --host 0.0.0.0 --port "$PUBLIC_PORT" &
 
 # Exit when either process exits so the platform restarts the service.
 # `wait -n` needs bash >= 4.3 (Render has it); plain `wait` fallback for

@@ -259,9 +259,3 @@ def test_chat_midstream_failure_keeps_partial_and_adds_notice():
 def test_chat_rejects_invalid_role():
     response = client.post("/chat", json={"messages": [{"role": "system", "content": "hi"}]})
     assert response.status_code == 422
-
-
-def test_index_describes_the_api():
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.json()["service"] == "Ask Claude API"

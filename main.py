@@ -192,12 +192,3 @@ def chat(request: ChatRequest) -> StreamingResponse:
             yield f"\n\n[Error from the Anthropic API: {getattr(e, 'message', str(e))}]"
 
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
-
-
-@app.get("/", include_in_schema=False)
-def index() -> dict:
-    return {
-        "service": "Ask Claude API",
-        "docs": "/docs",
-        "ui": "Streamlit — run `streamlit run streamlit_app.py`",
-    }
